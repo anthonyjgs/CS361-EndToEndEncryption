@@ -63,6 +63,7 @@ def main():
 
 def service_listen(listen_socket):
     req = listen_socket.recv_json()
+    print(f"REQUEST RECEIVED: {str(req)}")
     rep = None
     try:
         # If a local client wants to encrypt and send data to a service
@@ -91,6 +92,7 @@ def service_listen(listen_socket):
     if rep is None:
         rep = {"status": "error", "data": "Unknown request action"}
 
+    print(f"SENDING REPLY: {str(rep)}")
     listen_socket.send_json(rep)
 
 def send_request(req):
