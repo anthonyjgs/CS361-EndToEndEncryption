@@ -1,12 +1,23 @@
 import zmq
+import sys
 from cryptography.fernet import Fernet
 import base64
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 
-LISTEN_PORT = 55551
+if len(sys.argv) != 3:
+    print("Incorrect number of arguments")
+    print("Usage: python3 EndToEnd.py REP_PORT REQ_PORT")
+    exit(1)
+
+# Which port to listen on (connected to client if client is a req service)
+REP_PORT = sys.argv[1]
+# Which port to send to (connected to client if client is a rep service)
+REQ_PORT = sys.argv[2]
 
 context = zmq.Context()
+rep_socket = context.socket(zmq.REP)
+req_socket = context.socket(zmq.REQ)
 
 # A dict of the current connections and the symmetric keys for them
 current_connections = dict[str, str]()
@@ -27,27 +38,33 @@ public_pem = public_key.public_bytes(
 def main():
     print("End to End Encryption Service")
     print("Initializing...")
-    listen_socket = context.socket(zmq.REP)
-    listen_socket.bind(f"tcp://localhost:{LISTEN_PORT}")
-    print(f"Listening on port {LISTEN_PORT}")
+
+    rep_socket.bind(f"tcp://localhost:{REP_PORT}")
+    print(f"rep port: {REP_PORT}")
+    if REQ_PORT is not None:
+        req_socket.connect(f"tcp://localhost:{REQ_PORT}")
+        print(f"Client port: {REQ_PORT}")
 
     try:
         while True:
-            service_listen(listen_socket)
+            service_listen(rep_socket)
     except KeyboardInterrupt:
         print("Shutting down...")
-        listen_socket.close()
+        rep_socket.close()
 
 def service_listen(listen_socket):
     req = listen_socket.recv_json()
 
     try:
+        # If a local client wants to encrypt and send data to a service
         if req["action"] == "send":
             rep = send_request(req)
 
+        # If receiving an end-to-end message to pass to client
         elif req["action"] == "decrypt":
             rep = decrypt_request(req)
 
+        # If end-to-end receives a first-time connection and handshake request
         elif req["action"] == "handshake_init":
             rep = handshake_init(req)
 
@@ -66,31 +83,29 @@ def service_listen(listen_socket):
 
 def send_request(req):
     """ Unencrypted data is encrypted then sent to the remote connection """
-
-    key = current_connections.get(req["remote_addr"])
+    key = current_connections.get(req["public_key"])
 
     # Establish a secure symmetric key with remote if we haven't already
     if key is None:
         establish_symmetric_connection(req["remote_addr"])
-        key = current_connections.get(req["remote_addr"])
+        key = current_connections.get(req["public_key"])
 
     encrypted_data = encrypt_data(key, req["data"])
 
     socket = context.socket(zmq.REQ)
     socket.connect(f"tcp://{req["remote_addr"]}")
 
-    rep = send_encrypted(socket, encrypted_data, req["remote_addr"])
+    rep = send_encrypted(socket, encrypted_data)
 
     socket.close()
 
     decrypted_data = decrypt_data(key, rep["data"])
-
     return {"status": "success", "data": decrypted_data}
 
 
 def decrypt_request(req):
     """ Encrypted data is decrypted then the reply is prepared and returned """
-    key = current_connections.get("client")
+    key = current_connections.get(req["public_key"])
 
     # If no key has been established return an error response
     if key is None:
@@ -98,10 +113,11 @@ def decrypt_request(req):
 
     decrypted_data = decrypt_data(key, req["data"])
 
-    # simulate forwarding to local client
-    response_message = decrypted_data
+    # Forwarding to local client
+    req_socket.send_json(decrypted_data)
+    reply = req_socket.recv_json()
 
-    encrypted_reply = encrypt_data(key, response_message)
+    encrypted_reply = encrypt_data(key, reply)
 
     return {
         "status": "success",
@@ -109,12 +125,11 @@ def decrypt_request(req):
     }
 
 
-def establish_symmetric_connection(remote_addr):
+def establish_symmetric_connection(req):
     """ Perform RSA handshake to establish a shared symmetric key with remote service """
-
     # Create a socket and connect to remote service
     socket = context.socket(zmq.REQ)
-    socket.connect(f"tcp://{remote_addr}")
+    socket.connect(f"tcp://{req["remote_addr"]}")
 
     socket.send_json({
         "action": "handshake_init",
@@ -135,7 +150,7 @@ def establish_symmetric_connection(remote_addr):
         )
     )
 
-    current_connections[remote_addr] = symmetric_key
+    current_connections[req["public_key"]] = symmetric_key
 
     socket.close()
 
@@ -147,9 +162,10 @@ def decrypt_data(key, data):
     cipher = Fernet(key)
     return cipher.decrypt(data.encode()).decode()
 
-def send_encrypted(socket, encrypted_data, remote_addr):
+def send_encrypted(socket, encrypted_data):
     req = {
         "action": "decrypt",
+        "public_key": public_pem,
         "data": encrypted_data
     }
     socket.send_json(req)
@@ -157,7 +173,6 @@ def send_encrypted(socket, encrypted_data, remote_addr):
     return rep
 
 def handshake_init(req):
-
     remote_pub = serialization.load_pem_public_key(
         req["public_key"].encode()
     )
@@ -175,8 +190,8 @@ def handshake_init(req):
 
     encrypted_key_b64 = base64.b64encode(encrypted_key).decode()
 
-    # store using requester address
-    current_connections["client"] = symmetric_key
+    # Index symmetric keys by the other instance's public key
+    current_connections[req["public_key"]] = symmetric_key
 
     return {
         "status": "ok",
