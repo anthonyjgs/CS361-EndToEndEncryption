@@ -1,3 +1,5 @@
+from multiprocessing.reduction import sendfds
+
 import zmq
 from cryptography.fernet import Fernet
 
@@ -25,19 +27,19 @@ def main():
 def service_listen(listen_socket):
     req = listen_socket.recv_json()
     try:
-        if req.type == "plain":
-            rep = plain_request(req)
-        elif req.type == "encrypted":
-            rep = encrypted_request(req)
+        if req["action"] == "send":
+            rep = send_request(req)
+        elif req["action"] == "decrypt":
+            rep = decrypt_request(req)
         else:
-            rep = {"type": "error", "data": "Unknown request type"}
+            rep = {"status": "error", "data": "Unknown request action"}
 
     except Exception as e:
-        rep = {"type": "error", "data": "failed while processing request"}
+        rep = {"status": "error", "data": "failed while processing request"}
 
     listen_socket.send_json(rep)
 
-def plain_request(req):
+def send_request(req):
     """ Unencrypted data is encrypted then sent to the remote connection """
     key = current_connections.get(req.remote_addr)
 
@@ -54,19 +56,19 @@ def plain_request(req):
     rep = socket.recv_json()
     decrypted_data = decrypt_data(key, rep.data)
     socket.close()
-    return {"type": rep.type, "data": decrypted_data}
+    return {"status": "success", "data": decrypted_data}
 
 
-def encrypted_request(req):
+def decrypt_request(req):
     """ Encrypted data is decrypted then the reply is prepared and returned """
     key = current_connections.get(req.remote_address)
 
     # If no key has been established return an error response
     if key is None:
-        return {"type": "error", "data": "No connection established"}
+        return {"status": "error", "data": "No connection established"}
 
     decrypted_data = decrypt_data(key, req.data)
-    return {"type": "received", "data": decrypted_data}
+    return {"status": "received", "data": decrypted_data}
 
 
 def establish_symmetric_connection(remote_addr):
@@ -83,7 +85,7 @@ def decrypt_data(key, data):
     return cipher.decrypt(data)
 
 def send_encrypted(socket, encrypted_data):
-    req = {"type": "encrypted", "data": encrypted_data}
+    req = {"action": "decrypt", "data": encrypted_data}
     socket.send(req)
     rep = socket.recv_json()
     return rep
