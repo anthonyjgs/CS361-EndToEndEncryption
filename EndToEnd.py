@@ -5,6 +5,7 @@ import base64
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 import pickle
+import json
 
 REP_PORT = None
 REQ_PORT = None
@@ -103,16 +104,19 @@ def send_request(req):
         remote_pub = ip_to_pubs.get(req["remote_addr"])
         key = current_connections.get(remote_pub)
 
-    encrypted_data = encrypt_data(key, req["data"])
+    data_str = json.dumps(req["data"])
+    encrypted_str = encrypt_data(key, data_str)
 
     socket = context.socket(zmq.REQ)
     socket.connect(f"tcp://{req["remote_addr"]}")
-    rep = send_encrypted(socket, encrypted_data.decode("utf-8"))
+    rep = send_encrypted(socket, encrypted_str)
 
     socket.close()
 
-    decrypted_data = decrypt_data(key, rep["data"].decode("utf-8"))
-    return {"status": "success", "data": decrypted_data}
+    encrypted_reply_str = json.dumps(rep["data"])
+    decrypted_str = decrypt_data(key, encrypted_reply_str)
+    decrypted_json = json.loads(decrypted_str)
+    return {"status": "success", "data": decrypted_json}
 
 
 def decrypt_request(req):
@@ -130,13 +134,14 @@ def decrypt_request(req):
     if key is None:
         return {"status": "error", "data": "No connection established"}
 
-    decrypted_data = decrypt_data(key, req["data"].encode("utf-8"))
+    decrypted_str = decrypt_data(key, req["data"])
+    decrypted_json = json.loads(decrypted_str)
 
     # Forwarding to local client
-    req_socket.send_json(decrypted_data)
-    reply = req_socket.recv_json()
-
-    encrypted_reply = encrypt_data(key, reply)
+    req_socket.send_json(decrypted_json)
+    reply_obj = req_socket.recv_json()
+    reply_str = json.dumps(reply_obj)
+    encrypted_reply = encrypt_data(key, reply_str)
 
     return {
         "status": "success",
@@ -174,15 +179,18 @@ def establish_symmetric_connection(req):
 
     socket.close()
 
-def encrypt_data(key:str, data) -> bytes:
+def encrypt_data(key:str, data: str, encoding:str="utf-8") -> str:
     cipher = Fernet(key)
-    data_bytes = pickle.dumps(data)
-    return cipher.encrypt(data_bytes)
+    data_bytes = data.encode(encoding)
+    encrypted_bytes: bytes = cipher.encrypt(data_bytes)
+    encrypted_str = encrypted_bytes.decode(encoding)
+    return encrypted_str
 
-def decrypt_data(key, data:bytes):
+def decrypt_data(key:str, data:str, encoding:str="utf-8") -> str:
     cipher = Fernet(key)
-    decrypted_pickle = cipher.decrypt(data)
-    return pickle.loads(decrypted_pickle)
+    decrypted_bytes = cipher.decrypt(data)
+    decrypted_str = decrypted_bytes.decode(encoding)
+    return decrypted_str
 
 def send_encrypted(socket, encrypted_data:str):
     req = {
