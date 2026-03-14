@@ -5,15 +5,17 @@ import base64
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 
-if len(sys.argv) != 3:
-    print("Incorrect number of arguments")
-    print("Usage: python3 EndToEnd.py REP_PORT REQ_PORT")
-    exit(1)
 
-# Which port to listen on (connected to client if client is a req service)
-REP_PORT = sys.argv[1]
-# Which port to send to (connected to client if client is a rep service)
-REQ_PORT = sys.argv[2]
+if 2 <= len(sys.argv) <= 3:
+    # Which port to listen on (connected to client if client is a req service)
+    REP_PORT = sys.argv[1]
+    if len(sys.argv) == 3:
+        # Which port to send to (connected to client if client is a rep service)
+        REQ_PORT = sys.argv[2]
+else:
+    print("Incorrect number of arguments")
+    print("Usage: python3 EndToEnd.py REP_PORT [REQ_PORT]")
+    exit(1)
 
 context = zmq.Context()
 rep_socket = context.socket(zmq.REP)
@@ -105,6 +107,9 @@ def send_request(req):
 
 def decrypt_request(req):
     """ Encrypted data is decrypted then the reply is prepared and returned """
+    if REQ_PORT is None:
+        return {"status": "error", "data": "This connection does not have a listenting service"}
+
     key = current_connections.get(req["public_key"])
 
     # If no key has been established return an error response
